@@ -66,11 +66,13 @@ public:
 	~effect() = default;
 
 	int32 is_disable_related();
+	int32 is_self_destroy_related();
 	int32 is_can_be_forbidden();
 	int32 is_available();
 	int32 check_count_limit(uint8 playerid);
 	int32 is_activateable(uint8 playerid, const tevent& e, int32 neglect_cond = FALSE, int32 neglect_cost = FALSE, int32 neglect_target = FALSE, int32 neglect_loc = FALSE, int32 neglect_faceup = FALSE);
 	int32 is_action_check(uint8 playerid);
+	int32 is_activate_ready(effect* reason_effect, uint8 playerid, const tevent& e, int32 neglect_cond = FALSE, int32 neglect_cost = FALSE, int32 neglect_target = FALSE);
 	int32 is_activate_ready(uint8 playerid, const tevent& e, int32 neglect_cond = FALSE, int32 neglect_cost = FALSE, int32 neglect_target = FALSE);
 	int32 is_condition_check(uint8 playerid, const tevent& e);
 	int32 is_activate_check(uint8 playerid, const tevent& e, int32 neglect_cond = FALSE, int32 neglect_cost = FALSE, int32 neglect_target = FALSE);
@@ -156,6 +158,7 @@ public:
 #define EFFECT_TYPE_CONTINUOUS		0x0800	//
 #define EFFECT_TYPE_XMATERIAL		0x1000	//
 #define EFFECT_TYPE_GRANT			0x2000	//
+#define EFFECT_TYPE_TARGET			0x4000	//
 
 //========== Flags ==========
 enum effect_flag : uint32 {
@@ -273,6 +276,7 @@ inline effect_flag operator|(effect_flag flag1, effect_flag flag2)
 #define EFFECT_DUAL_STATUS				75	//
 #define EFFECT_EQUIP_LIMIT				76	//
 #define EFFECT_DUAL_SUMMONABLE			77	//
+#define EFFECT_UNION_LIMIT				78	//
 #define EFFECT_REVERSE_DAMAGE			80	//
 #define EFFECT_REVERSE_RECOVER			81	//
 #define EFFECT_CHANGE_DAMAGE			82	//
@@ -299,8 +303,8 @@ inline effect_flag operator|(effect_flag flag1, effect_flag flag2)
 #define EFFECT_REVERSE_UPDATE			108	//
 #define EFFECT_SWAP_AD					109	//
 #define EFFECT_SWAP_BASE_AD				110	//
-#define EFFECT_SWAP_ATTACK_FINAL		111
-#define EFFECT_SWAP_DEFENSE_FINAL		112
+//#define EFFECT_SWAP_ATTACK_FINAL		111
+//#define EFFECT_SWAP_DEFENSE_FINAL		112
 #define EFFECT_ADD_CODE					113	//
 #define EFFECT_CHANGE_CODE				114	//
 #define EFFECT_ADD_TYPE					115	//
@@ -362,6 +366,9 @@ inline effect_flag operator|(effect_flag flag1, effect_flag flag2)
 #define EFFECT_PIERCE					203
 #define EFFECT_BATTLE_DESTROY_REDIRECT	204
 #define EFFECT_BATTLE_DAMAGE_TO_EFFECT	205
+#define EFFECT_BOTH_BATTLE_DAMAGE		206
+#define EFFECT_ALSO_BATTLE_DAMAGE		207
+#define EFFECT_CHANGE_BATTLE_DAMAGE		208
 #define EFFECT_TOSS_COIN_REPLACE		220
 #define EFFECT_TOSS_DICE_REPLACE		221
 #define EFFECT_FUSION_MATERIAL			230
@@ -442,7 +449,9 @@ inline effect_flag operator|(effect_flag flag1, effect_flag flag2)
 #define EFFECT_EXTRA_LINK_MATERIAL		358
 #define EFFECT_QP_ACT_IN_SET_TURN		359
 #define EFFECT_EXTRA_PENDULUM_SUMMON	360
-#define EFFECT_IRON_WALL				361
+#define EFFECT_MATERIAL_LIMIT			361
+#define EFFECT_SET_BATTLE_ATTACK		362
+#define EFFECT_SET_BATTLE_DEFENSE		363
 
 #define EVENT_STARTUP		1000
 #define EVENT_FLIP			1001
@@ -467,8 +476,9 @@ inline effect_flag operator|(effect_flag flag1, effect_flag flag2)
 #define EVENT_CHAINING			1027
 #define EVENT_BECOME_TARGET		1028
 #define EVENT_DESTROYED			1029
-#define EVENT_MOVE			1030
+#define EVENT_MOVE				1030
 #define EVENT_ADJUST			1040
+#define EVENT_BREAK_EFFECT		1050
 #define EVENT_SUMMON_SUCCESS		1100
 #define EVENT_FLIP_SUMMON_SUCCESS	1101
 #define EVENT_SPSUMMON_SUCCESS		1102
@@ -509,7 +519,6 @@ inline effect_flag operator|(effect_flag flag1, effect_flag flag2)
 #define EVENT_LEVEL_UP				1200
 #define EVENT_PAY_LPCOST			1201
 #define EVENT_DETACH_MATERIAL		1202
-#define EVENT_RETURN_TO_GRAVE		1203
 #define EVENT_TURN_END				1210
 #define EVENT_PHASE					0x1000
 #define EVENT_PHASE_START			0x2000
@@ -517,4 +526,6 @@ inline effect_flag operator|(effect_flag flag1, effect_flag flag2)
 #define EVENT_REMOVE_COUNTER		0x20000
 #define EVENT_CUSTOM				0x10000000
 
+#define DOUBLE_DAMAGE				0x80000000
+#define HALF_DAMAGE					0x80000001
 #endif /* EFFECT_H_ */
