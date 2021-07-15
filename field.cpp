@@ -15,7 +15,10 @@
 int32 field::field_used_count[32] = {0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4, 1, 2, 2, 3, 2, 3, 3, 4, 2, 3, 3, 4, 3, 4, 4, 5};
 
 bool chain::chain_operation_sort(const chain& c1, const chain& c2) {
-	return c1.triggering_effect->id < c2.triggering_effect->id;
+	if (c1.triggering_effect && c2.triggering_effect && c1.triggering_effect->id != c2.triggering_effect->id)
+		return c1.triggering_effect->id < c2.triggering_effect->id;
+	else
+		return c1.chain_id < c2.chain_id;
 }
 void chain::set_triggering_state(card* pcard) {
 	triggering_controler = pcard->current.controler;
@@ -53,7 +56,6 @@ field::field(duel* pduel) {
 	for (int32 i = 0; i < 2; ++i) {
 		//cost[i].count = 0;
 		//cost[i].amount = 0;
-		core.hint_timing[i] = 0;
 		player[i].lp = 8000;
 		player[i].start_count = 5;
 		player[i].draw_count = 1;
@@ -68,58 +70,9 @@ field::field(duel* pduel) {
 		player[i].list_grave.reserve(30);
 		player[i].list_remove.reserve(30);
 		player[i].list_extra.reserve(15);
-		core.shuffle_deck_check[i] = FALSE;
-		core.shuffle_hand_check[i] = FALSE;
 	}
-	core.pre_field[0] = 0;
-	core.pre_field[1] = 0;
-	core.opp_mzone.clear();
-	core.summoning_card = 0;
-	core.summon_depth = 0;
-	core.summon_cancelable = FALSE;
-	core.chain_limit.clear();
-	core.chain_limit_p.clear();
-	core.chain_solving = FALSE;
-	core.conti_solving = FALSE;
-	core.conti_player = PLAYER_NONE;
-	core.win_player = 5;
-	core.win_reason = 0;
-	core.reason_effect = 0;
-	core.reason_player = PLAYER_NONE;
-	core.selfdes_disabled = FALSE;
-	core.flip_delayed = FALSE;
-	core.overdraw[0] = FALSE;
-	core.overdraw[1] = FALSE;
-	core.check_level = 0;
-	core.limit_tuner = 0;
-	core.limit_syn = 0;
-	core.limit_syn_minc = 0;
-	core.limit_syn_maxc = 0;
-	core.limit_xyz = 0;
-	core.limit_xyz_minc = 0;
-	core.limit_xyz_maxc = 0;
-	core.limit_link = 0;
-	core.limit_link_card = 0;
-	core.limit_link_minc = 0;
-	core.limit_link_maxc = 0;
-	core.last_control_changed_id = 0;
-	core.duel_options = 0;
-	core.duel_rule = 0;
-	core.attacker = 0;
-	core.attack_target = 0;
-	core.attack_rollback = FALSE;
-	core.deck_reversed = FALSE;
-	core.remove_brainwashing = FALSE;
-	core.effect_damage_step = FALSE;
-	core.shuffle_check_disabled = FALSE;
-	core.global_flag = 0;
-	nil_event.event_code = 0;
-	nil_event.event_cards = 0;
-	nil_event.event_player = PLAYER_NONE;
-	nil_event.event_value = 0;
-	nil_event.reason = 0;
-	nil_event.reason_effect = 0;
-	nil_event.reason_player = PLAYER_NONE;
+	returns = { 0 };
+	temp_card = nullptr;
 }
 void field::reload_field_info() {
 	pduel->write_buffer8(MSG_RELOAD_FIELD);
@@ -236,6 +189,8 @@ void field::add_card(uint8 playerid, card* pcard, uint8 location, uint8 sequence
 	pcard->apply_field_effect();
 	pcard->fieldid = infos.field_id++;
 	pcard->fieldid_r = pcard->fieldid;
+	if(check_unique_onfield(pcard, pcard->current.controler, pcard->current.location))
+		pcard->unique_fieldid = UINT_MAX;
 	pcard->turnid = infos.turn_id;
 	if (location == LOCATION_MZONE)
 		player[playerid].used_location |= 1 << sequence;
@@ -364,8 +319,11 @@ void field::move_card(uint8 playerid, card* pcard, uint8 location, uint8 sequenc
 				if(preplayer == playerid) {
 					pduel->write_buffer32(pcard->get_info_location());
 					pduel->write_buffer32(pcard->current.reason);
-				} else
+				} else {
 					pcard->fieldid = infos.field_id++;
+					if(check_unique_onfield(pcard, pcard->current.controler, pcard->current.location))
+						pcard->unique_fieldid = UINT_MAX;
+				}
 				return;
 			} else if(location == LOCATION_HAND) {
 				if(preplayer == playerid)
@@ -451,6 +409,10 @@ void field::swap_card(card* pcard1, card* pcard2, uint8 new_sequence1, uint8 new
 		if(p1 != p2) {
 			pcard1->fieldid = infos.field_id++;
 			pcard2->fieldid = infos.field_id++;
+			if(check_unique_onfield(pcard1, pcard1->current.controler, pcard1->current.location))
+				pcard1->unique_fieldid = UINT_MAX;
+			if(check_unique_onfield(pcard2, pcard2->current.controler, pcard2->current.location))
+				pcard2->unique_fieldid = UINT_MAX;
 		}
 		if(l1 == LOCATION_MZONE) {
 			player[p1].list_mzone[s1] = 0;
@@ -633,12 +595,31 @@ int32 field::is_location_useable(uint32 playerid, uint32 location, uint32 sequen
 	}
 	return TRUE;
 }
+/**
+* Return usable count in zone of playerid's MZONE or SZONE(0~4) when uplayer moves pcard to playerid's field (can be negative).
+* for LOCATION_MZONE, "usable" means not used, not disabled, satisfying EFFECT_MUST_USE_MZONE, satisfying EFFECT_MAX_MZONE
+* for LOCATION_SZONE, "usable" means not used, not disabled, satisfying EFFECT_MAX_SZONE
+* 
+* @param pcard		the card about to move
+* @param playerid	the target player
+* @param location	LOCATION_MZONE or LOCATION_SZONE
+* @param uplayer	the request player, PLAYER_NONE means ignoring EFFECT_MUST_USE_MZONE of uplayer, ignoring EFFECT_MAX_MZONE, EFFECT_MAX_SZONE of playerid
+* @param reason		location reason
+* @param zone		specified zones, 0xff by default
+* @param list		storing unavailable or unspecified zones
+* 
+* @return usable count in zone of playerid's MZONE or SZONE(0~4) (can be negative) 
+*/
 int32 field::get_useable_count(card* pcard, uint8 playerid, uint8 location, uint8 uplayer, uint32 reason, uint32 zone, uint32* list) {
 	if(location == LOCATION_MZONE && pcard && pcard->current.location == LOCATION_EXTRA)
 		return get_useable_count_fromex(pcard, playerid, uplayer, zone, list);
 	else
 		return get_useable_count_other(pcard, playerid, location, uplayer, reason, zone, list);
 }
+/**
+* @param pcard	the card about to move from Extra Deck (NULL means any card in Extra Deck)
+* @return usable count in zone of playerid's MZONE for pcard
+*/
 int32 field::get_useable_count_fromex(card* pcard, uint8 playerid, uint8 uplayer, uint32 zone, uint32* list) {
 	bool use_temp_card = false;
 	if(!pcard) {
@@ -655,12 +636,20 @@ int32 field::get_useable_count_fromex(card* pcard, uint8 playerid, uint8 uplayer
 		pcard->current.location = 0;
 	return useable_count;
 }
+/**
+* @return the number of available grids in zone of playerid's MZONE for pcard sp_summoned by playerid
+* for LOCATION_MZONE, "available" means not used, not disabled, satisfying EFFECT_MUST_USE_MZONE
+*/
 int32 field::get_spsummonable_count(card* pcard, uint8 playerid, uint32 zone, uint32* list) {
 	if(pcard->current.location == LOCATION_EXTRA)
 		return get_spsummonable_count_fromex(pcard, playerid, playerid, zone, list);
 	else
 		return get_tofield_count(pcard, playerid, LOCATION_MZONE, playerid, LOCATION_REASON_TOFIELD, zone, list);
 }
+/**
+* @param pcard	the card about to move from Extra Deck (NULL means any card in Extra Deck)
+* @return the number of available grids in zone of playerid's MZONE for pcard
+*/
 int32 field::get_spsummonable_count_fromex(card* pcard, uint8 playerid, uint8 uplayer, uint32 zone, uint32* list) {
 	bool use_temp_card = false;
 	if(!pcard) {
@@ -677,7 +666,9 @@ int32 field::get_spsummonable_count_fromex(card* pcard, uint8 playerid, uint8 up
 		pcard->current.location = 0;
 	return spsummonable_count;
 }
-// return: usable count of main mzone or szone(0~4) of playerid requested by uplayer (may be negative)
+/**
+* @return usable count in zone of Main MZONE or SZONE(0~4)
+*/
 int32 field::get_useable_count_other(card* pcard, uint8 playerid, uint8 location, uint8 uplayer, uint32 reason, uint32 zone, uint32* list) {
 	int32 count = get_tofield_count(pcard, playerid, location, uplayer, reason, zone, list);
 	int32 limit;
@@ -689,10 +680,11 @@ int32 field::get_useable_count_other(card* pcard, uint8 playerid, uint8 location
 		count = limit;
 	return count;
 }
-// uplayer: request player, PLAYER_NONE means ignoring EFFECT_MUST_USE_MZONE, EFFECT_MAX_MZONE, EFFECT_MAX_SZONE
-// list: store unavailable flag in list
-// for LOCATION_MZONE, return the available count of zone in main mzone (not used, not disabled, satisfying EFFECT_MUST_USE_MZONE)
-// for LOCATION_SZONE, return the available count of zone in szone(0~4) (not used, not disabled)
+/** 
+* @return the number of available grids in zone of Main MZONE or SZONE(0~4)
+* for LOCATION_MZONE, "available" means not used, not disabled, satisfying EFFECT_MUST_USE_MZONE
+* for LOCATION_SZONE, "available" means not used, not disabled
+*/
 int32 field::get_tofield_count(card* pcard, uint8 playerid, uint8 location, uint32 uplayer, uint32 reason, uint32 zone, uint32* list) {
 	if (location != LOCATION_MZONE && location != LOCATION_SZONE)
 		return 0;
@@ -744,6 +736,13 @@ int32 field::get_spsummonable_count_fromex_rule4(card* pcard, uint8 playerid, ui
 		count++;
 	return count;
 }
+/**
+* @param playerid	the target player
+* @param uplayer	the request player, PLAYER_NONE means ignoring EFFECT_MAX_MZONE
+* @param reason		location reason
+*
+* @return the remaining count in playerid's MZONE after applying EFFECT_MAX_MZONE (can be negative).
+*/
 int32 field::get_mzone_limit(uint8 playerid, uint8 uplayer, uint32 reason) {
 	uint32 used_flag = player[playerid].used_location;
 	used_flag = used_flag & 0x1f;
@@ -770,6 +769,13 @@ int32 field::get_mzone_limit(uint8 playerid, uint8 uplayer, uint32 reason) {
 	int32 limit = max - used_count;
 	return limit;
 }
+/**
+* @param playerid	the target player
+* @param uplayer	the request player, PLAYER_NONE means ignoring EFFECT_MAX_SZONE
+* @param reason		location reason
+*
+* @return the remaining count in playerid's SZONE(0~4) after applying EFFECT_MAX_SZONE.
+*/
 int32 field::get_szone_limit(uint8 playerid, uint8 uplayer, uint32 reason) {
 	uint32 used_flag = player[playerid].used_location;
 	used_flag = (used_flag >> 8) & 0x1f;
@@ -810,6 +816,13 @@ uint32 field::get_rule_zone_fromex(int32 playerid, card* pcard) {
 		return 0x1f;
 	}
 }
+/**
+* @param playerid	the target player
+* @param uplayer	the request player, PLAYER_NONE means ignoring EFFECT_MUST_USE_MZONE of uplayer
+* @param reason		location reason
+* @param pcard		the card about to move
+* @param flag		storing the zones in MZONE blocked by EFFECT_MUST_USE_MZONE
+*/
 void field::filter_must_use_mzone(uint8 playerid, uint8 uplayer, uint32 reason, card* pcard, uint32* flag) {
 	effect_set eset;
 	if(uplayer < 2)
@@ -1035,6 +1048,7 @@ void field::swap_deck_and_grave(uint8 playerid) {
 			++clit;
 	}
 	for(auto& pcard : player[playerid].list_grave) {
+		pcard->current.position = POS_FACEUP;
 		pcard->current.location = LOCATION_GRAVE;
 		pcard->current.reason = REASON_EFFECT;
 		pcard->current.reason_effect = core.reason_effect;
@@ -1044,6 +1058,7 @@ void field::swap_deck_and_grave(uint8 playerid) {
 		pcard->reset(RESET_TOGRAVE, RESET_EVENT);
 	}
 	for(auto& pcard : player[playerid].list_main) {
+		pcard->current.position = POS_FACEDOWN_DEFENSE;
 		pcard->current.location = LOCATION_DECK;
 		pcard->current.reason = REASON_EFFECT;
 		pcard->current.reason_effect = core.reason_effect;
@@ -1053,6 +1068,7 @@ void field::swap_deck_and_grave(uint8 playerid) {
 		pcard->reset(RESET_TODECK, RESET_EVENT);
 	}
 	for(auto& pcard : ex) {
+		pcard->current.position = POS_FACEDOWN_DEFENSE;
 		pcard->current.location = LOCATION_EXTRA;
 		pcard->current.reason = REASON_EFFECT;
 		pcard->current.reason_effect = core.reason_effect;
@@ -1061,7 +1077,7 @@ void field::swap_deck_and_grave(uint8 playerid) {
 		pcard->enable_field_effect(true);
 		pcard->reset(RESET_TODECK, RESET_EVENT);
 	}
-	player[playerid].list_extra.insert(player[playerid].list_extra.end(), ex.begin(), ex.end());
+	player[playerid].list_extra.insert(player[playerid].list_extra.end() - player[playerid].extra_p_count, ex.begin(), ex.end());
 	reset_sequence(playerid, LOCATION_GRAVE);
 	reset_sequence(playerid, LOCATION_EXTRA);
 	pduel->write_buffer8(MSG_SWAP_GRAVE_DECK);
@@ -1817,6 +1833,9 @@ void field::get_ritual_material(uint8 playerid, effect* peffect, card_set* mater
 		if(pcard && pcard->is_affect_by_effect(peffect)
 		        && pcard->is_releasable_by_nonsummon(playerid) && pcard->is_releasable_by_effect(playerid, peffect))
 			material->insert(pcard);
+		if(pcard && pcard->is_affected_by_effect(EFFECT_OVERLAY_RITUAL_MATERIAL))
+			for(auto& mcard : pcard->xyz_materials)
+				material->insert(mcard);
 	}
 	for(auto& pcard : player[1 - playerid].list_mzone) {
 		if(pcard && pcard->is_affect_by_effect(peffect)
@@ -1831,28 +1850,78 @@ void field::get_ritual_material(uint8 playerid, effect* peffect, card_set* mater
 		if((pcard->data.type & TYPE_MONSTER) && pcard->is_affected_by_effect(EFFECT_EXTRA_RITUAL_MATERIAL) && pcard->is_removeable(playerid, POS_FACEUP, REASON_EFFECT))
 			material->insert(pcard);
 }
-void field::get_fusion_material(uint8 playerid, card_set* material) {
-	for(auto& pcard : player[playerid].list_mzone) {
-		if(pcard)
-			material->insert(pcard);
+void field::get_fusion_material(uint8 playerid, card_set* material_all, card_set* material_base, uint32 location) {
+	if(location & LOCATION_MZONE) {
+		for(auto& pcard : player[playerid].list_mzone) {
+			if(pcard)
+				material_base->insert(pcard);
+		}
+	}
+	if(location & LOCATION_HAND) {
+		for(auto& pcard : player[playerid].list_hand) {
+			if(pcard->data.type & TYPE_MONSTER)
+				material_base->insert(pcard);
+		}
+	}
+	if(location & LOCATION_GRAVE) {
+		for(auto& pcard : player[playerid].list_grave) {
+			if(pcard->data.type & TYPE_MONSTER)
+				material_base->insert(pcard);
+		}
+	}
+	if(location & LOCATION_REMOVED) {
+		for(auto& pcard : player[playerid].list_remove) {
+			if(pcard->data.type & TYPE_MONSTER)
+				material_base->insert(pcard);
+		}
+	}
+	if(location & LOCATION_DECK) {
+		for(auto& pcard : player[playerid].list_main) {
+			if(pcard->data.type & TYPE_MONSTER)
+				material_base->insert(pcard);
+		}
+	}
+	if(location & LOCATION_EXTRA) {
+		for(auto& pcard : player[playerid].list_extra) {
+			if(pcard->data.type & TYPE_MONSTER)
+				material_base->insert(pcard);
+		}
+	}
+	if(location & LOCATION_SZONE) {
+		for(auto& pcard : player[playerid].list_szone) {
+			if(pcard && pcard->data.type & TYPE_MONSTER)
+				material_base->insert(pcard);
+		}
+	}
+	if(location & LOCATION_PZONE) {
+		for(auto& pcard : player[playerid].list_szone) {
+			if(pcard && pcard->current.pzone && pcard->data.type & TYPE_MONSTER)
+				material_base->insert(pcard);
+		}
 	}
 	for(auto& pcard : player[playerid].list_szone) {
 		if(pcard && pcard->is_affected_by_effect(EFFECT_EXTRA_FUSION_MATERIAL))
-			material->insert(pcard);
+			material_all->insert(pcard);
 	}
-	for(auto& pcard : player[playerid].list_hand)
-		if(pcard->data.type & TYPE_MONSTER)
-			material->insert(pcard);
+	for(auto& pcard : player[playerid].list_grave) {
+		if(pcard->is_affected_by_effect(EFFECT_EXTRA_FUSION_MATERIAL))
+			material_all->insert(pcard);
+	}
+	material_all->insert(material_base->begin(), material_base->end());
 }
 void field::ritual_release(card_set* material) {
 	card_set rel;
 	card_set rem;
+	card_set xyz;
 	for(auto& pcard : *material) {
 		if(pcard->current.location == LOCATION_GRAVE)
 			rem.insert(pcard);
+		else if(pcard->current.location == LOCATION_OVERLAY)
+			xyz.insert(pcard);
 		else
 			rel.insert(pcard);
 	}
+	send_to(&xyz, core.reason_effect, REASON_RITUAL + REASON_EFFECT + REASON_MATERIAL, core.reason_player, PLAYER_NONE, LOCATION_GRAVE, 0, POS_FACEUP);
 	release(&rel, core.reason_effect, REASON_RITUAL + REASON_EFFECT + REASON_MATERIAL, core.reason_player);
 	send_to(&rem, core.reason_effect, REASON_RITUAL + REASON_EFFECT + REASON_MATERIAL, core.reason_player, PLAYER_NONE, LOCATION_REMOVED, 0, POS_FACEUP);
 }
@@ -2871,13 +2940,15 @@ int32 field::is_player_can_discard_deck_as_cost(uint8 playerid, int32 count) {
 		return FALSE;
 	if(is_player_affected_by_effect(playerid, EFFECT_CANNOT_DISCARD_DECK))
 		return FALSE;
-	if((count == 1) && core.deck_reversed)
-		return player[playerid].list_main.back()->is_capable_cost_to_grave(playerid);
+	card* topcard = player[playerid].list_main.back();
+	if((count == 1) && topcard->is_position(POS_FACEUP))
+		return topcard->is_capable_cost_to_grave(playerid);
+	bool cant_remove = !is_player_can_action(playerid, EFFECT_CANNOT_REMOVE);
 	effect_set eset;
 	filter_field_effect(EFFECT_TO_GRAVE_REDIRECT, &eset);
 	for(int32 i = 0; i < eset.size(); ++i) {
 		uint32 redirect = eset[i]->get_value();
-		if((redirect & LOCATION_REMOVED) && player[playerid].list_main.back()->is_affected_by_effect(EFFECT_CANNOT_REMOVE))
+		if((redirect & LOCATION_REMOVED) && (cant_remove || topcard->is_affected_by_effect(EFFECT_CANNOT_REMOVE)))
 			continue;
 		uint8 p = eset[i]->get_handler_player();
 		if((p == playerid && eset[i]->s_range & LOCATION_DECK) || (p != playerid && eset[i]->o_range & LOCATION_DECK))
@@ -2989,7 +3060,7 @@ int32 field::is_player_can_spsummon(effect* reason_effect, uint32 sumtype, uint8
 		return FALSE;
 	}
 	restore_lp_cost();
-	if(sumpos & POS_FACEDOWN && is_player_affected_by_effect(playerid, EFFECT_DEVINE_LIGHT))
+	if(sumpos & POS_FACEDOWN && is_player_affected_by_effect(playerid, EFFECT_DIVINE_LIGHT))
 		sumpos = (sumpos & POS_FACEUP) | ((sumpos & POS_FACEDOWN) >> 1);
 	effect_set eset;
 	filter_player_effect(playerid, EFFECT_CANNOT_SPECIAL_SUMMON, &eset);
